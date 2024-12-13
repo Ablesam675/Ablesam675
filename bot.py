@@ -1,56 +1,59 @@
 import os
-from telegram.ext import Updater, CommandHandler
+from flask import Flask, request
+from telegram import Bot, Update
+from telegram.ext import Dispatcher, CommandHandler, CallbackContext
 from huggingface_hub import InferenceClient
-from PIL import Image
-from io import BytesIO
 
-# Function to generate an image using Hugging Face
-def generate_image(update, context):
+# Set up Flask
+app = Flask(__name__)
+
+# Telegram Bot token and Hugging Face token
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')  # Set this in your environment variables
+HUGGINGFACE_TOKEN = os.getenv('HUGGINGFACE_TOKEN')  # Set this in your environment variables
+
+# Hugging Face client
+hf_client = InferenceClient("stabilityai/stable-diffusion-3.5-large-turbo", token=HUGGINGFACE_TOKEN)
+
+# Telegram bot setup
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
+dispatcher = Dispatcher(bot, update_queue=None, workers=0)
+
+# Start command
+def start(update: Update, context: CallbackContext) -> None:
+    update.message.reply_text("Hello! Send me a prompt, and I'll generate an image for you using AI.")
+
+# Generate image command
+def generate_image(update: Update, context: CallbackContext) -> None:
+    if not context.args:
+        update.message.reply_text("Please provide a prompt. For example: /generate A sunset over a mountain.")
+        return
+
+    prompt = " ".join(context.args)
+    update.message.reply_text(f"Generating image for: {prompt}...")
+
     try:
-        # Extract the prompt from the user's message
-        prompt = " ".join(context.args)
-        if not prompt:
-            update.message.reply_text("Please provide a description for the image. Example: /generate Astronaut riding a horse")
-            return
+        # Call Hugging Face API to generate an image
+        image = hf_client.text_to_image(prompt)
+        # Save image to a temporary file
+        temp_file = "output.png"
+        image.save(temp_file)
 
-        # Hugging Face client
-        token = "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"
-        client = InferenceClient(model="stabilityai/stable-diffusion-3.5-large-turbo", token=token)
-
-        # Generate the image
-        update.message.reply_text("Generating your image, please wait...")
-        image = client.text_to_image(prompt)
-
-        # Save the image to a buffer
-        buffer = BytesIO()
-        image.save(buffer, format="PNG")
-        buffer.seek(0)
-
-        # Send the image to the user
-        update.message.reply_photo(photo=buffer, caption=f"Here is your image for: '{prompt}'")
-
+        # Send image back to the user
+        with open(temp_file, "rb") as img:
+            update.message.reply_photo(photo=img, caption=f"Here is your AI-generated image for: {prompt}")
     except Exception as e:
-        update.message.reply_text(f"An error occurred: {str(e)}")
+        update.message.reply_text(f"Failed to generate image: {e}")
 
-# Function to handle the /start command
-def start(update, context):
-    update.message.reply_text("Welcome to the AI Image Generator Bot! Use /generate <description> to create an image.")
+# Add handlers
+dispatcher.add_handler(CommandHandler("start", start))
+dispatcher.add_handler(CommandHandler("generate", generate_image))
 
-def main():
-    # Telegram bot token
-    tg_token = "8007890518:AAG0G_HYOTYfZcUQAMIdnWXbKHFWmHniN6Y"
-
-    # Set up the bot
-    updater = Updater(tg_token, use_context=True)
-    dp = updater.dispatcher
-
-    # Add command handlers
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("generate", generate_image))
-
-    # Start the bot
-    updater.start_polling()
-    updater.idle()
+# Webhook route
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    dispatcher.process_update(update)
+    return "OK"
 
 if __name__ == "__main__":
-    main()
+    app.run(debug=True)
